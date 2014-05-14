@@ -158,8 +158,6 @@ close OUTFILE_GENOERR_COUNT;
 
 sub Step2 {
 #@_[0] is the number of markers required for a switch to be considered "real"
-
-print STDOUT "The number of markers required for a switch is @_[0].\n";
 if(@_[0] == 0){
 	print STDOUT "Please enter a value greater than 0 for the number of markers necessary for switches to be considered real\n";
 	die;
@@ -704,8 +702,6 @@ foreach $currentmom (keys %offspr_mat_hash){
 					$m_chr1 = "-";
 					$m_chr2 = "-";
 					for($i = 0; $i < $numberkids; $i++){
-						#print STDOUT "$val_ary[$i]\t";
-						#print STDOUT "\n";
 						if($val_ary[$i] eq "0"){
 							@counts[$i]++;
 						}
@@ -1022,8 +1018,6 @@ foreach $currentdad (keys %offspr_pat_hash){
 					$m_chr1 = "-";
 					$m_chr2 = "-";
 					for($i = 0; $i < $numberkids; $i++){
-						#print STDOUT "$val_ary[$i]\t";
-						#print STDOUT "\n";
 						if($val_ary[$i] eq "0"){
 							@counts[$i]++;
 						}
@@ -1377,8 +1371,6 @@ foreach $currentmom (keys %offspr_mat_hash){
 					$m_chr1 = "-";
 					$m_chr2 = "-";
 					for($i = 0; $i < $numberkids; $i++){
-						#print STDOUT "$val_ary[$i]\t";
-						#print STDOUT "\n";
 						if($val_ary[$i] eq "0"){
 							@counts[$i]++;
 						}
@@ -1695,8 +1687,6 @@ foreach $currentdad (keys %offspr_pat_hash){
 					$m_chr1 = "-";
 					$m_chr2 = "-";
 					for($i = 0; $i < $numberkids; $i++){
-						#print STDOUT "$val_ary[$i]\t";
-						#print STDOUT "\n";
 						if($val_ary[$i] eq "0"){
 							@counts[$i]++;
 						}
@@ -1947,7 +1937,6 @@ sub print_sub{
 			$maternal = @triotoks[0];
 			$paternal = @triotoks[1];
 			my $offspr = @triotoks[2];
-			print "$offspr\n";
 			&chop_sub($offspr);
 			&print_sub($offspr);
 		}
@@ -2089,6 +2078,915 @@ my %seen = ();
       next if $seen{$_} > 1;
       print;
    }
+}
+}
+
+sub Step7 {
+#@_[0] is the matrix of diploid genotypes
+#Open the "Non-founder matrix", "cleared_trios", and the sequencing data files
+open (NFM, "Nonfounder_matrix.csv") || die;
+open (CLEAREDPED, "Cleared_trios.csv") || die;
+open (SEQdata, @_[0]) || die;
+
+###Load the files into memory
+##Read in non-founder matrix
+$NFMheader = <NFM>;
+$NFMlinecount = 0;
+while($NFMline = <NFM>){
+	chop $NFMline;
+	@toks = split(',', $NFMline);
+	@NFMindiv[$NFMlinecount] = $toks[0];
+	@NFMfoundingchr[$NFMlinecount] = $toks[1];
+	@NFMstart[$NFMlinecount] = $toks[2];
+	@NFMend[$NFMlinecount] = $toks[3];
+	@NFMPath[$NFMlinecount] = $toks [4];
+	$NFMlinecount++
+}
+close (NFM);
+
+##Read in seq data
+#Get header for seq data and make arrays to hold data
+$SEQdataheader = <SEQdata>;
+chop $SEQdataheader;
+@toks2 = split(',', $SEQdataheader);
+$SEQdataarraylength = scalar (@toks2);
+#make array for each column
+foreach $colname (@toks2){
+	$currentarray{$colname} = [];
+}
+
+#Read in data and store in the arrays created
+$SEQdatalinecount = 0;
+while($SEQdataline = <SEQdata>){
+	chop $SEQdataline;
+	@toks3 = split(',', $SEQdataline);
+	$SEQdatacolcount = 0;
+	foreach $column (@toks3){
+		$currentarrayarray = @toks2[$SEQdatacolcount];
+		push @{$currentarray{$currentarrayarray}}, $column;
+		$SEQdatacolcount++;
+	}
+	$SEQdatalinecount++;
+}
+$numberofsequencedindividuals = $SEQdataarraylength - 3;
+close (SEQdata);
+
+##Read in the cleared-ped file and split into mother, father, offspring
+$triolinecount = 0;
+while($trioline = <CLEAREDPED>){
+	chop $trioline;
+	@toks4 = split('_',$trioline);
+	@mother[$triolinecount] = @toks4[0];
+	@father[$triolinecount] = @toks4[1];
+	@offspring[$triolinecount] = @toks4[2];
+	$triolinecount++;
+}
+close (CLEAREDPED);
+
+####This is code for checking to make sure the data was read in correctly.
+$NFMarraylength = scalar(@NFMindiv);
+
+###Identify all of the founding chromosomes
+my @uniquefounderchrs;
+my %seenfounderchrs;
+foreach my $value (@NFMfoundingchr) {
+	if (! $seenfounderchrs{$value}++ ) {
+		push @uniquefounderchrs, $value;
+	}
+}
+
+####Create list of all sequenced individuals
+@sequencedindivids = @toks2[3 .. $#toks2];
+
+####For each founding chromosome, use available information to impute genotypes
+###Create an array of arrays to store the phased genotypes for each founding chr
+foreach $founderchrforarray (@uniquefounderchrs){
+	$arrayoffounderchrs{$founderchrforarray} = [];
+}
+###Set global variable for blanked and uninformative genotypes
+$blankgenotype = "-";
+$uninformative = "u";
+
+foreach $currentfoundingchromosome (@uniquefounderchrs){
+	####Is current founder sequenced
+	$sequenced = 0;
+	@toks5 = split('_',$currentfoundingchromosome);
+	$currfounder = @toks5[0];
+	if (grep {$_ eq $currfounder} @sequencedindivids){
+		$sequenced = 1;
+	}
+	
+	####Create shortened non-founder matrix for currentfoundingchr
+	@currentNFMindiv = [];
+	@currentNFMfoundingchr = [];
+	@currentNFMstart = [];
+	@currentNFMend = [];
+	@currentNFMPath = [];	
+	$currentNFMlinecount = 0;
+	for($i = 0; $i < $NFMarraylength; $i++) {
+		if (@NFMfoundingchr[$i] eq $currentfoundingchromosome){
+			@currentNFMindiv[$currentNFMlinecount] = @NFMindiv[$i];
+			@currentNFMfoundingchr[$currentNFMlinecount] = @NFMfoundingchr[$i];
+			@currentNFMstart[$currentNFMlinecount] = @NFMstart[$i];
+			@currentNFMend[$currentNFMlinecount] = @NFMend[$i];
+			@currentNFMPath[$currentNFMlinecount] = @NFMPath[$i];
+			$currentNFMlinecount++;
+		}
+	}
+	$currentNFMarraylength = scalar(@currentNFMindiv);
+	
+	#Identify non-founders who inherited segment of current founder chromosome.
+	my @uniquenonfounderchrs = [];
+	my %seennonfounderchrs = [];
+	foreach $NFvalue (@currentNFMindiv) {
+		if (! $seennonfounderchrs{$NFvalue}++ ) {
+			push @uniquenonfounderchrs, $NFvalue;
+		}
+	}
+	
+	#Identify which of these individuals is sequenced
+	my @sequencedNFforthisNFchr = [];
+	$seqindivtok = 0;
+	foreach $NFseg (@uniquenonfounderchrs){
+		foreach $seqedindiv (@sequencedindivids) {
+			if ($NFseg eq $seqedindiv) {
+				@sequencedNFforthisNFchr[$seqindivtok]= $seqedindiv;
+				$seqindivtok++;
+			}
+		}
+	}
+	
+	#Identfy non-founders who are phased
+	my @phasedNFforthisNFchr = [];
+	$phaseindivtok = 0;
+	foreach $NFphase (@sequencedNFforthisNFchr){
+		foreach $phasedindiv (@offspring) {
+			if ($NFphase eq $phasedindiv) {
+				@phasedNFforthisNFchr[$phaseindivtok] = $NFphase;
+				$phaseindivtok++;
+			}
+		}
+	}
+
+	#make array of arrays to hold phasedNFdata
+	foreach $currphasekid (@phasedNFforthisNFchr){
+		$phasedkidarray{$currphasekid} = [];
+	}
+	#count number of phased kids available for the 	NF chr
+	$phasedkidforthisNFchrcount = scalar(@phasedNFforthisNFchr);
+
+	###Open files for phased non-founders
+	foreach $phasedkid (@phasedNFforthisNFchr) {
+		for ($i=0; $i<$triolinecount; $i++){
+			if(@offspring[$i] eq $phasedkid){
+				my $phasedkidfilename = ("@mother[$i]"."_"."@father[$i]"."_"."@offspring[$i]"."_geno.csv");
+				open (PHASEDKIDFILE, $phasedkidfilename) || die;
+				$phasedkidheader = <PHASEDKIDFILE>;
+				@toks8 = split(',',$phasedkidheader);
+				@currentNFindiv = [];
+				@currentNFfoundingchr = [];
+				@currentNFstart = [];
+				@currentNFend = [];
+				@currentNFPath = [];	
+				$currentNFlinecount = 0;
+				for($j = 0; $j < $currentNFMarraylength; $j++) {
+					if (@currentNFMindiv[$j] eq $phasedkid){
+						@currentNFindiv[$currentNFlinecount] = @currentNFMindiv[$j];
+						@currentNFfoundingchr[$currentNFlinecount] = @currentNFMfoundingchr[$j];
+						@currentNFstart[$currentNFlinecount] = @currentNFMstart[$j];
+						@currentNFend[$currentNFlinecount] = @currentNFMend[$j];
+						@currentNFPath[$currentNFlinecount] = @currentNFMPath[$j];
+						$currentNFlinecount++;
+					}
+				}
+				##Read in the correct inherited chromosome for the kid and store in array
+				$currentNFPathtoexplode = @currentNFPath[0];
+				@toks6 = split('_',$currentNFPathtoexplode);
+				$checkforinherited = @currentNFMfoundingchr[0];
+				@toks7 = split('_',$checkforinherited);
+				$inheritedword = "inherited";
+				if(@toks7[2] eq $inheritedword){
+					$colnameofinterest = ("@toks6[1]"."_"."@toks6[0]"."_inherited");					
+				}
+				else{
+					$colnameofinterest = ("@toks6[0]"."_"."@toks6[1]"."_inherited");
+				}
+				$k = [];
+				for($j = 0; $j <10; $j++){
+					$check = @toks8[$j];
+					if ($check eq $colnameofinterest){
+						$k = $j;
+					}
+				}
+				while ($line = <PHASEDKIDFILE>){
+					chop $line;
+					@toks9 = split(",",$line);
+					push @{$phasedkidarray{$phasedkid}},@toks9[$k];
+				}
+				close (PHASEDKIDFILE);
+			}
+		}
+	}
+	$currentmarkercount = 0;
+	$locarrayname = @toks2[2];
+	foreach $currmarkerloc (@{$currentarray{$locarrayname}}){
+		$boolean1 = 0;
+		$boolean2 = 0;		
+		if ($sequenced == 1){
+			$sequencedmarkergeno = $currentarray{$currfounder}[$currentmarkercount];
+			if ($sequencedmarkergeno eq $blankgenotype){
+				$boolean1 = 1;
+			}
+			elsif($sequencedmarkergeno eq 1){
+				$boolean1 = 1;
+			}
+			elsif($sequencedmarkergeno eq 0){
+				push @{$arrayoffounderchrs{$currentfoundingchromosome}},0;
+			}
+			elsif($sequencedmarkergeno eq 2){
+				push @{$arrayoffounderchrs{$currentfoundingchromosome}},1;
+			}
+			else{
+				$boolean1 = 1;
+			}
+		}
+		else {
+			$boolean1 = 1;
+		}
+		if ($boolean1 == 1){
+			@arrayofobservedphasedgenotypes = [];
+			$counter1 = 0;
+			foreach $phasedkidholder(@phasedNFforthisNFchr){
+				for($i = 0; $i < $currentNFMarraylength; $i++) {
+					if(@currentNFMindiv[$i] eq $phasedkidholder){
+						if(@currentNFMstart[$i] <= $currmarkerloc){
+							if(@currentNFMend[$i] >= $currmarkerloc){
+								push @arrayofobservedphasedgenotypes, $phasedkidarray{$phasedkidholder}[$currentmarkercount];
+								$counter1++;
+							}
+						}
+					}
+				}
+			}
+			if($counter1 == 0){
+				$boolean2 = 1;
+			}
+			elsif($counter1 > 0){
+				$phasezerocount = 0;
+				$phaseonecount = 0;
+				foreach $phasegenotypetoken (@arrayofobservedphasedgenotypes){
+					if($phasegenotypetoken eq 0){
+						$phasezerocount++;
+					}
+					elsif($phasegenotypetoken eq 1){
+						$phaseonecount++;
+					}
+				}
+				if($phasezerocount == 0){
+					if($phaseonecount == 0){
+						$boolean2 = 1;
+					}
+					elsif($phaseonecount >= 1){
+						push @{$arrayoffounderchrs{$currentfoundingchromosome}},1;
+					}
+				}
+				elsif($phasezerocount > 0){
+					if($phaseonecount == 0){
+						push @{$arrayoffounderchrs{$currentfoundingchromosome}},0;	
+					}
+					elsif($phaseonecount >= 1){
+						$boolean2 = 1;
+					}
+				}	
+			}	
+		}
+		if ($boolean2 == 1){
+			@arrayofobservedsequencedgenotypes = [];
+			$counter2 = 0;
+			foreach $sequencedkidholder (@sequencedNFforthisNFchr){	
+				for($i = 0; $i < $currentNFMarraylength; $i++) {
+					if(@currentNFMindiv[$i] eq $sequencedkidholder){	
+						if(@currentNFMstart[$i] <= $currmarkerloc){
+							if(@currentNFMend[$i] >= $currmarkerloc){
+								push @arrayofobservedsequencedgenotypes, $currentarray{$sequencedkidholder}[$currentmarkercount];
+								$counter2++;
+							}
+						}
+					}
+				}
+			}
+			if($counter2 ==0){
+				push @{$arrayoffounderchrs{$currentfoundingchromosome}},$uninformative;
+			}
+			elsif($counter2 > 0){
+				$sequencedzerocount = 0;
+				$sequencedtwocount = 0;
+				foreach $sequencedgenotypetoken (@arrayofobservedsequencedgenotypes){
+					if($sequencedgenotypetoken eq 0){
+						$sequencedzerocount++;
+					}
+					elsif($sequencedgenotypetoken eq 2){
+						$sequencedtwocount++;
+					}
+				}
+				if($sequencedzerocount == 0){
+					if($sequencedtwocount == 0){
+						push @{$arrayoffounderchrs{$currentfoundingchromosome}},$uninformative;
+					}
+					elsif($sequencedtwocount >=1){
+						push @{$arrayoffounderchrs{$currentfoundingchromosome}},1;
+					}
+				}
+				elsif($sequencedzerocount > 0){
+					if($sequencedtwocount == 0){
+						push @{$arrayoffounderchrs{$currentfoundingchromosome}},0;
+					}
+					elsif($sequencedtwocount >=1){
+						push @{$arrayoffounderchrs{$currentfoundingchromosome}},$uninformative;
+					}
+				}
+			}
+
+		}
+	$currentmarkercount++;
+	}
+}
+
+#output phased founder chrs
+open IMPUTEDFOUNDERCHR, ">Imputed_founder_chrs.csv" or die $!;
+foreach $colheader (@toks2[0..2]){
+	print IMPUTEDFOUNDERCHR "$colheader,";
+}
+$colheader1 = @toks2[0];
+$colheader2 = @toks2[1];
+$colheader3 = @toks2[2];
+foreach $outputfounderchr (@uniquefounderchrs){
+	print IMPUTEDFOUNDERCHR "$outputfounderchr,";
+}
+print IMPUTEDFOUNDERCHR "\n";
+for($i=0;$i < $SEQdatalinecount; $i++){
+	print IMPUTEDFOUNDERCHR "$currentarray{$colheader1}[$i],$currentarray{$colheader2}[$i],$currentarray{$colheader3}[$i],";
+	foreach $outputfounderchr (@uniquefounderchrs){
+		print IMPUTEDFOUNDERCHR "$arrayoffounderchrs{$outputfounderchr}[$i],";
+		delete $arrayoffounderchrs{$outputfounderchr}[$i];
+	}
+	print IMPUTEDFOUNDERCHR "\n";
+}
+close (IMPUTEDFOUNDERCHR);
+}
+
+sub Step8 {
+#@_[0] is the matrix of diploid genotypes
+#Open the sequencing data and phased founder chromosomes files
+open (SEQdata, @_[0]) || die;
+open (FOUNDERdata, "<Imputed_founder_chrs.csv") || die;
+open (FOUNDERinferred, ">Imputed_founder_chrs_2.csv") || die;
+
+##Read in seq data
+#Get header for seq data and make arrays to hold data
+$SEQdataheader = <SEQdata>;
+chop $SEQdataheader;
+@toks2 = split(',', $SEQdataheader);
+$SEQdataarraylength = scalar (@toks2);
+
+#make array for each column
+foreach $colname (@toks2){
+	$currentarray{$colname} = [];
+}
+@sequencedindivids = @toks2[3 .. $#toks2];
+
+##Read in founder data
+#Get header for founder data and make arrays to hold data
+$FOUNDERdataheader = <FOUNDERdata>;
+chop $FOUNDERdataheader;
+@toks4 = split(',', $FOUNDERdataheader);
+$FOUNDERdataarraylength = scalar (@toks4);
+
+#make array for each column
+foreach $colname (@toks4){
+	$currentarray{$colname} = [];
+}
+@founderchrsalreadyimputed = @toks4[3 .. $#toks4];
+
+###Identify all of the founders and create an array to hold the founding chromosome data
+my @uniquefounder;
+my %seenfounder;
+@firstfoundingchrs = @toks4[3 .. $#toks4];
+foreach my $value (@firstfoundingchrs) {
+	@toks6 = split('_',$value);
+	$value2 = @toks6[0];
+	if (! $seenfounder{$value2}++ ) {
+		push @uniquefounder, $value2;
+	}
+}
+
+foreach $colname (@uniquefounder){
+	$founderchr1="$colname"."_1";
+	$founderchr2="$colname"."_2";
+	$Imputedfounder{$founderchr1} = [];
+	$Imputedfounder{$founderchr2} = [];
+}
+
+print FOUNDERinferred "@toks4[0],@toks4[1],@toks4[2]";
+foreach $colname (@uniquefounder){
+	$founderchr1="$colname"."_1";
+	$founderchr2="$colname"."_2";
+	print FOUNDERinferred ",$founderchr1,$founderchr2";
+}
+print FOUNDERinferred "\n";
+
+while ($SEQdataline = <SEQdata>){
+	$FOUNDERdataline = <FOUNDERdata>;
+	chop $SEQdataline;
+	@toks3 = split(',', $SEQdataline);
+	$SEQdatacolcount = 0;
+	foreach $column (@toks3){
+		$currentSEQarrayarray = @toks2[$SEQdatacolcount];
+		$currentSEQarray{$currentSEQarrayarray}[0]= $column;
+		$SEQdatacolcount++;
+	}
+	$SEQdatalinecount++;
+	chop $FOUNDERdataline;
+	@toks5 = split(',', $FOUNDERdataline);
+	$FOUNDERdatacolcount = 0;
+	foreach $column2 (@toks5){
+		$currentFOUNDERarrayarray = @toks4[$FOUNDERdatacolcount];
+		$currentFOUNDERarray{$currentFOUNDERarrayarray}[0]= $column2;
+		$FOUNDERdatacolcount++;
+	}
+	$FOUNDERdatalinecount++;	
+	foreach $colname (@uniquefounder){
+		$founderchr1="$colname"."_1";
+		$founderchr2="$colname"."_2";
+		$Imputedfounder{$founderchr1}[0] = ();
+		$Imputedfounder{$founderchr2}[0] = ();
+	}
+
+	foreach $founder (@uniquefounder){
+	###Is the current founder sequenced?
+		$sequenced = 0;
+		if (grep {$_ eq $founder} @sequencedindivids){
+			$sequenced = 1;
+		}
+		$founderchr1="$founder"."_1";
+		$founderchr2="$founder"."_2";
+		$founderchr1imputed = 0;
+		if (grep {$_ eq $founderchr1} @founderchrsalreadyimputed){
+			$founderchr1imputed = 1;
+		}
+		$founderchr2imputed = 0;
+		if (grep {$_ eq $founderchr2} @founderchrsalreadyimputed){
+			$founderchr2imputed = 1;
+		}
+		###for each marker infer allele on paired haplotype if missing, alternatively, if imputed genotypes do not match diploid genotype blank genotypes
+		if($sequenced eq '0'){
+			if(($founderchr1imputed eq '1') && ($founderchr2imputed eq '1')){
+				$Imputedfounder{$founderchr1}[0] = $currentFOUNDERarray{$founderchr1}[0];
+				$Imputedfounder{$founderchr2}[0] = $currentFOUNDERarray{$founderchr2}[0];
+			}
+			elsif(($founderchr1imputed eq '1') && ($founderchr2imputed eq '0')){
+				$Imputedfounder{$founderchr1}[0] = $currentFOUNDERarray{$founderchr1}[0];
+				$Imputedfounder{$founderchr2}[0] = "u";
+			}
+			elsif(($founderchr1imputed eq '0') && ($founderchr2imputed eq '1')){
+				$Imputedfounder{$founderchr1}[0] = "u";
+				$Imputedfounder{$founderchr2}[0] = $currentFOUNDERarray{$founderchr2}[0];
+			}
+		}
+		elsif($sequenced eq '1'){
+			if(($founderchr1imputed eq '1') && ($founderchr2imputed eq '1')){
+				$diploid = $currentSEQarray{$founder}[0];
+				$founderhaploid1 = $currentFOUNDERarray{$founderchr1}[0];
+				$founderhaploid2 = $currentFOUNDERarray{$founderchr2}[0];
+				if($diploid =~ /[0-9]/){
+					if(($founderhaploid1 =~ /[0-9]/) && ($founderhaploid2 =~ /[0-9]/)){
+						$inferreddiploid = $founderhaploid1 + $founderhaploid2;
+						if($diploid == $inferreddiploid){
+							$Imputedfounder{$founderchr1}[0] = $founderhaploid1;
+							$Imputedfounder{$founderchr2}[0] = $founderhaploid2;
+						}
+						else{
+							$Imputedfounder{$founderchr1}[0] = "u";
+							$Imputedfounder{$founderchr2}[0] = "u";
+						}
+					}
+					elsif($founderhaploid1 =~ /[0-9]/){
+						$founderhaploid2 = $diploid - $founderhaploid1;
+						$Imputedfounder{$founderchr1}[0] = $founderhaploid1;
+						$Imputedfounder{$founderchr2}[0] = $founderhaploid2;
+					}
+					elsif($founderhaploid2 =~ /[0-9]/){
+						$founderhaploid1 = $diploid - $founderhaploid2;
+						$Imputedfounder{$founderchr1}[0] = $founderhaploid1;
+						$Imputedfounder{$founderchr2}[0] = $founderhaploid2;
+					}
+					else{
+						$Imputedfounder{$founderchr1}[0] = $currentFOUNDERarray{$founderchr1}[0];
+						$Imputedfounder{$founderchr2}[0] = $currentFOUNDERarray{$founderchr2}[0];
+					}
+				}
+				else{
+					$Imputedfounder{$founderchr1}[0] = $founderhaploid1;
+					$Imputedfounder{$founderchr2}[0] = $founderhaploid2;
+				}
+			}
+			elsif(($founderchr1imputed eq '1') && ($founderchr2imputed eq '0')){
+				$diploid = $currentSEQarray{$founder}[0];
+				$founderhaploid1 = $currentFOUNDERarray{$founderchr1}[0];			
+				if($diploid =~ /[0-9]/){
+					if($founderhaploid1 =~ /[0-9]/){
+						$founderhaploid2 = $diploid - $founderhaploid1;	
+						$Imputedfounder{$founderchr1}[0] = $founderhaploid1;
+						$Imputedfounder{$founderchr2}[0] = $founderhaploid2;
+					}
+					else{
+						$Imputedfounder{$founderchr1}[0] = "u";
+						$Imputedfounder{$founderchr2}[0] = "u";
+					}
+				}
+				else{
+					$Imputedfounder{$founderchr1}[0] = $currentFOUNDERarray{$founderchr1}[0];
+					$Imputedfounder{$founderchr2}[0] = "u";
+				}			
+			}
+			elsif(($founderchr1imputed eq '0') && ($founderchr2imputed eq '1')){
+				$diploid = $currentSEQarray{$founder}[0];
+				$founderhaploid2 = $currentFOUNDERarray{$founderchr2}[0];
+				$founderhaploid1 = $diploid - $founderhaploid2;
+				$Imputedfounder{$founderchr1}[0] = $founderhaploid1;
+				$Imputedfounder{$founderchr2}[0] = $founderhaploid2;	
+			}
+		}	
+	}
+	print FOUNDERinferred "$currentFOUNDERarray{@toks4[0]}[0],$currentFOUNDERarray{@toks4[1]}[0],$currentFOUNDERarray{@toks4[2]}[0]";
+	foreach $colname (@uniquefounder){
+	$founderchr1="$colname"."_1";
+	$founderchr2="$colname"."_2";
+	print FOUNDERinferred ",$Imputedfounder{$founderchr1}[0]";
+	print FOUNDERinferred ",$Imputedfounder{$founderchr2}[0]";
+	}
+	print FOUNDERinferred "\n";
+}
+close (FOUNDERinferred);
+close (SEQdata);
+close (FOUNDERdata);
+}
+
+sub Step9 {
+###Open input files
+
+open (FM, "Imputed_founder_chrs_2.csv") || die;
+open (NFM, "Nonfounder_matrix.csv") || die;
+
+###Load input files into memory
+##Read in non-founder matrix
+$NFMheader = <NFM>;
+$NFMlinecount = 0;
+while($NFMline = <NFM>){
+	chop $NFMline;
+	@toks = split(',', $NFMline);
+	@NFMindiv[$NFMlinecount] = $toks[0];
+	@NFMfoundingchr[$NFMlinecount] = $toks[1];
+	@NFMstart[$NFMlinecount] = $toks[2];
+	@NFMend[$NFMlinecount] = $toks[3];
+	@NFMPath[$NFMlinecount] = $toks [4];
+	$NFMlinecount++;
+}
+close (NFM);
+
+##Read in founder matrix data data
+#Get header for founder matrix and make arrays to hold data
+$SEQdataheader = <FM>;
+chop $SEQdataheader;
+@toks2 = split(',', $SEQdataheader);
+$SEQdataarraylength = scalar (@toks2);
+#make array for each column
+foreach $colname (@toks2){
+	$currentarray{$colname} = [];
+	
+}
+
+#Read in data and store in the arrays created
+$SEQdatalinecount = 0;
+while($SEQdataline = <FM>){
+	chop $SEQdataline;
+	@toks3 = split(',', $SEQdataline);
+	$SEQdatacolcount = 0;
+	foreach $column (@toks3){
+		$currentarrayarray = @toks2[$SEQdatacolcount];
+		push @{$currentarray{$currentarrayarray}}, $column;
+		$SEQdatacolcount++;
+	}
+	$SEQdatalinecount++;
+}
+$numberofsequencedindividuals = $SEQdataarraylength - 3;
+close (SEQdata);
+
+$NFMarraylength = scalar(@NFMindiv);
+###Identify all of the non-founders
+my @nonfounders;
+my %seennonfounders;
+$uniqueNFindivids = 0;
+foreach my $value (@NFMindiv) {
+	if (! $seennonfounders{$value}++ ) {
+		push @nonfounders, $value;
+		$uniqueNFindivids++;
+	}
+}
+
+###Create an array of arrays to store the diploid genotypes for each non-founder
+foreach $nonfounderforarray (@nonfounders){
+	$arrayofnonfounders{$nonfounderforarray} = [];
+}
+
+###Universal variables
+$positionname = @toks2[2];
+$snpname = @toks2[0];
+$chrname = @toks2[1];
+
+foreach $currentnonfounder (@nonfounders){
+	@currentNFMindiv = [];
+	@currentNFMfoundingchr = [];
+	@currentNFMstart = [];
+	@currentNFMend = [];
+	@currentNFMPath = [];	
+	$currentNFMlinecount = 0;
+	for($i = 0; $i < $NFMarraylength; $i++) {
+		if (@NFMindiv[$i] eq $currentnonfounder){
+			@currentNFMindiv[$currentNFMlinecount] = @NFMindiv[$i];
+			@currentNFMfoundingchr[$currentNFMlinecount] = @NFMfoundingchr[$i];
+			@currentNFMstart[$currentNFMlinecount] = @NFMstart[$i];
+			@currentNFMend[$currentNFMlinecount] = @NFMend[$i];
+			@currentNFMPath[$currentNFMlinecount] = @NFMPath[$i];
+			$currentNFMlinecount++;
+		}
+	}
+	$currentNFMarraylength = scalar(@currentNFMindiv);	
+	for($i = 0; $i < $SEQdatalinecount; $i++){
+		$sum = ();
+		$founder1 = "";
+		$founder2 = "";
+		$has_f = 0;
+		for($j = 0; $j < $currentNFMarraylength; $j++){
+			if (($currentarray{$positionname}[$i] >= @currentNFMstart[$j]) && ($currentarray{$positionname}[$i] <= @currentNFMend[$j])){
+				if($has_f == 0){
+					$founder1 = @currentNFMfoundingchr[$j];
+					$has_f = 1;
+				}
+				else{
+					$founder2 = @currentNFMfoundingchr[$j];
+					$has_f = 2;
+				}
+			}
+		}
+		if ($has_f <2){
+			$arrayofnonfounders{$currentnonfounder}[$i] = "-";
+		}
+		else{
+			if(($currentarray{$founder1}[$i] =~ /[0-9]/) && ($currentarray{$founder2}[$i] =~ /[0-9]/)) {
+				$sum = $currentarray{$founder1}[$i] + $currentarray{$founder2}[$i];
+				$arrayofnonfounders{$currentnonfounder}[$i] = $sum;
+			}
+			else{
+				$arrayofnonfounders{$currentnonfounder}[$i] = "-";
+			}
+		}
+
+	}
+}
+
+open (OUTFILE, ">Diploid_matrix.csv");
+print OUTFILE "@toks2[0],@toks2[1],@toks2[2]";
+foreach $currentnonfounder (@nonfounders){
+	print OUTFILE ",$currentnonfounder";
+}
+print OUTFILE "\n";
+for($i = 0; $i < $SEQdatalinecount; $i++){
+	print OUTFILE "$currentarray{$snpname}[$i],$currentarray{$chrname}[$i],$currentarray{$positionname}[$i]";
+	foreach $currentnonfounder (@nonfounders){
+		print OUTFILE ",$arrayofnonfounders{$currentnonfounder}[$i]";
+	}
+	print OUTFILE "\n";
+}
+}
+
+sub Step10{
+###Open input files
+open (FM, "Imputed_founder_chrs_2.csv") || die;
+
+###Load input files into memory
+##Read in founder matrix data data
+#Get header for founder matrix and make arrays to hold data
+$SEQdataheader = <FM>;
+chop $SEQdataheader;
+@toks2 = split(',', $SEQdataheader);
+$SEQdataarraylength = scalar (@toks2);
+#make array for each column
+foreach $colname (@toks2){
+	$currentarray{$colname} = [];
+	
+}
+
+#Read in data and store in the arrays created
+$SEQdatalinecount = 0;
+while($SEQdataline = <FM>){
+	chop $SEQdataline;
+	@toks3 = split(',', $SEQdataline);
+	$SEQdatacolcount = 0;
+	foreach $column (@toks3){
+		$currentarrayarray = @toks2[$SEQdatacolcount];
+		push @{$currentarray{$currentarrayarray}}, $column;
+		$SEQdatacolcount++;
+	}
+	$SEQdatalinecount++;
+}
+$numberofsequencedindividuals = $SEQdataarraylength - 3;
+close (SEQdata);
+
+$founderslistholder = 0;
+for ($i=3; $i < $SEQdataarraylength; $i++){
+	@toks8 = split('_',@toks2[$i]);
+	@founderslist1[$founderslistholder] = @toks8[0];
+	$founderslistholder++;
+}
+
+my @uniquefounders;
+my %seenfounders;
+foreach my $value (@founderslist1) {
+	if (! $seenfounders{$value}++ ) {
+		push @uniquefounders, $value;
+	}
+}
+
+###Create an array of arrays to store the diploid genotypes for each founder
+foreach $founderchrforarray (@uniquefounderchrs){
+	$arrayoffounderchrs{$founderchrforarray} = [];
+}
+
+foreach $currentfounder (@uniquefounders){
+	for($i = 0; $i < $SEQdatalinecount; $i++){
+		$sum = ();
+		$founder1name = "";
+		$founder2name = "";
+		$founder1 = ();
+		$founder2 = ();
+		$founder1name = "$currentfounder"."_1";
+		$founder1 = $currentarray{$founder1name}[$i];
+		$founder2name = "$currentfounder"."_2";
+		$founder2 = $currentarray{$founder2name}[$i];
+		if(($founder1 =~ /[0-9]/) && ($founder2 =~ /[0-9]/)) {
+			$sum = $founder1 + $founder2;
+			$arrayoffounderchrs{$currentfounder}[$i] = $sum;
+		}
+		else{
+			$arrayoffounderchrs{$currentfounder}[$i] = "-";
+		}
+	}
+}
+
+open (OUTFILE, ">Founder_diploid_matrix.csv");
+print OUTFILE "@toks2[0],@toks2[1],@toks2[2]";
+foreach $currentfounder (@uniquefounders){
+	print OUTFILE ",$currentfounder";
+}
+print OUTFILE "\n";
+$positionname = @toks2[2];
+$snpname = @toks2[0];
+$chrname = @toks2[1];
+for($i = 0; $i < $SEQdatalinecount; $i++){
+	print OUTFILE "$currentarray{$snpname}[$i],$currentarray{$chrname}[$i],$currentarray{$positionname}[$i]";
+	foreach $currentfounder (@uniquefounders){
+		print OUTFILE ",$arrayoffounderchrs{$currentfounder}[$i]";
+	}
+	print OUTFILE "\n";
+}
+}
+
+sub Step11 {
+###Open input files
+open (FM, "Founder_diploid_matrix.csv") || die;
+open (NFM, "Diploid_matrix.csv") || die;
+open (OUTFILE, ">Imputed_diploid_matrix.csv") || die;
+
+$FMheaderline = <FM>;
+chop $FMheaderline;
+@toks1 = split(',', $FMheaderline);
+$toks1length = scalar (@toks1);
+$NFMheaderline = <NFM>;
+chop $NFMheaderline;
+@toks2 = split(',', $NFMheaderline);
+$toks2length = scalar (@toks2);
+print OUTFILE "@toks1[0]";
+for($i = 1; $i < $toks1length; $i++){
+	print OUTFILE ",@toks1[$i]";
+}
+for($j = 3; $j < $toks2length; $j++){
+	print OUTFILE ",@toks2[$j]";
+}
+print OUTFILE "\n";
+while ($line = <FM>){
+	$line2 = <NFM>;
+	chop $line;
+	chop $line2;
+	@toks3 = split(',', $line);
+	@toks4 = split(',', $line2);
+	print OUTFILE "@toks3[0]";
+	for($i = 1; $i < $toks1length; $i++){
+		print OUTFILE ",@toks3[$i]";
+	}
+	for($j = 3; $j < $toks2length; $j++){
+		print OUTFILE ",@toks4[$j]";
+	}
+	print OUTFILE "\n";
+}
+}
+
+sub Step12 {
+###Open input files
+$sequencedata = @_[0];
+open (Imputed, "Imputed_diploid_matrix.csv") || die;
+open (Sequenced, $sequencedata) || die;
+open (OUTFILE, ">Combined_sequenced_and_imputed_matrix.csv") || die;
+$Imputedheaderline = <Imputed>;
+chop $Imputedheaderline;
+@toks1 = split(',', $Imputedheaderline);
+$toks1length = scalar (@toks1);
+$Sequencedheaderline = <Sequenced>;
+chop $Sequencedheaderline;
+@toks2 = split(',', $Sequencedheaderline);
+$toks2length = scalar (@toks2);
+foreach $Imputedcolname (@toks1){
+	$Imputedarray{$Imputedcolname} = [];	
+}
+foreach $Sequencedcolname (@toks2){
+	$Sequencedarray{$Sequencedcolname} = [];	
+}
+my @indivs;
+my %seenindivs;
+$uniqueindivs = 0;
+for ($i=3; $i < $toks1length; $i++) {
+	$value = @toks1[$i];
+	if (! $seenindivs{$value}++ ) {
+		push @indivs, $value;
+		$uniqueindivs++;
+	}
+}
+for ($i=3; $i < $toks2length; $i++) {
+	$value = @toks2[$i];
+	if (! $seenindivs{$value}++ ) {
+		push @indivs, $value;
+		$uniqueindivs++;
+	}
+}
+foreach $diploidindiv(@indivs){
+	$diploidarray{$diploidindiv} = [];
+}
+print OUTFILE "@toks1[0],@toks1[1],@toks1[2]";
+for ($i=0; $i < $uniqueindivs; $i++){
+	print OUTFILE ",@indivs[$i]";
+}
+print OUTFILE "\n";
+while ($line = <Imputed>){
+	$line2 = <Sequenced>;
+	chop $line;
+	chop $line2;
+	@toks3 = split(',', $line);
+	@toks4 = split(',', $line2);
+	$Imputedcolcount = 0;
+	foreach $column (@toks3){
+		$currentimputedarray = @toks1[$Imputedcolcount];
+		$Imputedarray{$currentimputedarray}[0]=$column;
+		$Imputedcolcount++;
+	}
+	$Imputedcolcount2 = 0;
+	foreach $column2 (@toks4){
+		$currentsequencedarray = @toks2[$Imputedcolcount2];
+		$Sequencedarray{$currentsequencedarray}[0]=$column2;
+		$Imputedcolcount2++;
+	}
+	foreach $diploiddude(@indivs){
+		$Genotype1="";
+		$Genotype2="";
+		$Decidedgenotype=();
+		$Genotype1=$Imputedarray{$diploiddude}[0];
+		$Genotype2=$Sequencedarray{$diploiddude}[0];
+		if($Genotype2 =~ /[0-9]/){
+			$Decidedgenotype=$Genotype2;
+		}
+		elsif($Genotype1 =~ /[0-9]/){
+			$Decidedgenotype=$Genotype1;
+		}
+		else{
+			$Decidedgenotype="-";
+		}
+		$diploidarray{$diploiddude}[0] = $Decidedgenotype;
+	}
+print OUTFILE "@toks3[0],@toks3[1],@toks3[2]";
+for ($i=0; $i < $uniqueindivs; $i++){
+	$uniqueid = @indivs[$i];
+	print OUTFILE ",$diploidarray{$uniqueid}[0]";
+}
+print OUTFILE "\n";
 }
 }
 
